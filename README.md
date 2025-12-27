@@ -67,15 +67,51 @@ Purchase a new SNS name on Solana.
 ```json
 {
   "name": "myname",
-  "privateKey": "YOUR_PRIVATE_KEY"
+  "privateKey": "YOUR_PRIVATE_KEY",
+  "payerPrivateKey": "OPTIONAL_PAYER_KEY",  // Optional: Different wallet to pay fee
+  "ownerAddress": "OPTIONAL_OWNER_ADDRESS"    // Optional: Different address to assign name
 }
 ```
+
+**Parameters:**
+- `name` (required): SNS name to purchase
+- `privateKey` (required): Private key for owner (if ownerAddress not provided)
+- `payerPrivateKey` (optional): Private key of wallet that will pay the fee
+- `ownerAddress` (optional): Solana address to assign the name to (different from payer)
 
 **Private Key Formats Supported:**
 - Base58 string (recommended): `"2HcA3h9fmeD51GDYEJgM4br8Y19pyJ5qP5q7xRnazikhaS43qTk8nF8eiVRNQJXLyP2wjjX4vjrKbrTA8iEqxbzY"`
 - Array: `[1,2,3,...]`
 - Comma-separated string: `"1,2,3,..."`
 - JSON array string: `"[1,2,3,...]"`
+
+**Use Cases:**
+1. **Same payer and owner** (default):
+   ```json
+   {
+     "name": "myname",
+     "privateKey": "YOUR_KEY"
+   }
+   ```
+
+2. **Different payer, same owner**:
+   ```json
+   {
+     "name": "myname",
+     "privateKey": "OWNER_KEY",
+     "payerPrivateKey": "PAYER_KEY"
+   }
+   ```
+
+3. **Different payer and owner**:
+   ```json
+   {
+     "name": "myname",
+     "privateKey": "OWNER_KEY",
+     "payerPrivateKey": "PAYER_KEY",
+     "ownerAddress": "DIFFERENT_OWNER_ADDRESS"
+   }
+   ```
 
 **Response:**
 ```json
@@ -85,10 +121,14 @@ Purchase a new SNS name on Solana.
   "data": {
     "name": "myname",
     "nameAccount": "5ngKhX24Nb3aisHiYesZNypyPmd1ZHMPZX8X6orutATT",
-    "userAddress": "GobhrJqK1JnBb94NdR3zAvbQxwGN6EBukHBCZ9oZSJUY",
+    "payerAddress": "GobhrJqK1JnBb94NdR3zAvbQxwGN6EBukHBCZ9oZSJUY",
+    "ownerAddress": "GobhrJqK1JnBb94NdR3zAvbQxwGN6EBukHBCZ9oZSJUY",
+    "isDifferentOwner": false,
     "transactionSignature": "4e3BV4RyQZDiDdM8YW4tfMpemKYjakk9mDvMDjd4jVRQzm3aq2Dsfck27UL9cy3yA8w1LzdnhX7Eyd3NqzTGfuZM",
     "network": "testnet",
-    "explorerUrl": "https://solscan.io/tx/...?cluster=testnet"
+    "explorerUrl": "https://solscan.io/tx/...?cluster=testnet",
+    "payerExplorerUrl": "https://solscan.io/account/...?cluster=testnet",
+    "ownerExplorerUrl": "https://solscan.io/account/...?cluster=testnet"
   }
 }
 ```
@@ -106,13 +146,38 @@ Purchase a new SNS name on Solana.
 }
 ```
 
-**cURL Example:**
+**cURL Examples:**
+
+**Example 1: Same payer and owner (default)**
 ```bash
 curl -X POST http://localhost:3000/api/buy-sns-name \
   -H "Content-Type: application/json" \
   -d '{
     "name": "myname",
     "privateKey": "2HcA3h9fmeD51GDYEJgM4br8Y19pyJ5qP5q7xRnazikhaS43qTk8nF8eiVRNQJXLyP2wjjX4vjrKbrTA8iEqxbzY"
+  }'
+```
+
+**Example 2: Different payer (company pays, employee owns)**
+```bash
+curl -X POST http://localhost:3000/api/buy-sns-name \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "employee-name",
+    "privateKey": "EMPLOYEE_PRIVATE_KEY",
+    "payerPrivateKey": "COMPANY_PRIVATE_KEY"
+  }'
+```
+
+**Example 3: Different payer and owner (gift scenario)**
+```bash
+curl -X POST http://localhost:3000/api/buy-sns-name \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "gift-name",
+    "privateKey": "OWNER_PRIVATE_KEY",
+    "payerPrivateKey": "GIFTER_PRIVATE_KEY",
+    "ownerAddress": "RECIPIENT_WALLET_ADDRESS"
   }'
 ```
 

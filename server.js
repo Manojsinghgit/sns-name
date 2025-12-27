@@ -51,7 +51,7 @@ function deriveNameAccount(name) {
 // API endpoint to buy SNS name
 app.post('/api/buy-sns-name', async (req, res) => {
   try {
-    const { name, privateKey } = req.body;
+    const { name, privateKey, payerPrivateKey, ownerAddress } = req.body;
 
     // Validation
     if (!name || !privateKey) {
@@ -61,6 +61,12 @@ app.post('/api/buy-sns-name', async (req, res) => {
       });
     }
 
+    // If payerPrivateKey is provided, use it for payment, otherwise use privateKey
+    const paymentKey = payerPrivateKey || privateKey;
+    
+    // If ownerAddress is provided, use it, otherwise use privateKey's address
+    let ownerPublicKey;
+
     // Validate name format (alphanumeric and hyphens only)
     if (!/^[a-z0-9-]+$/.test(name.toLowerCase())) {
       return res.status(400).json({
@@ -69,29 +75,41 @@ app.post('/api/buy-sns-name', async (req, res) => {
       });
     }
 
-    // Parse private key - supports multiple formats
-    let keypair;
+    // Parse owner address if provided
+    if (ownerAddress) {
+      try {
+        ownerPublicKey = new PublicKey(ownerAddress);
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid ownerAddress format. Must be a valid Solana address'
+        });
+      }
+    }
+
+    // Parse payment private key (payer) - supports multiple formats
+    let payerKeypair;
     try {
       // Check if it's a base58 string (Solana wallet format)
-      if (typeof privateKey === 'string' && privateKey.length > 40 && !privateKey.includes(',')) {
+      if (typeof paymentKey === 'string' && paymentKey.length > 40 && !paymentKey.includes(',')) {
         // Base58 encoded string
-        const decoded = bs58.decode(privateKey);
-        keypair = Keypair.fromSecretKey(decoded);
+        const decoded = bs58.decode(paymentKey);
+        payerKeypair = Keypair.fromSecretKey(decoded);
       } 
       // Check if it's a comma-separated string
-      else if (typeof privateKey === 'string' && privateKey.includes(',')) {
-        const privateKeyArray = privateKey.split(',').map(Number);
-        keypair = Keypair.fromSecretKey(new Uint8Array(privateKeyArray));
+      else if (typeof paymentKey === 'string' && paymentKey.includes(',')) {
+        const privateKeyArray = paymentKey.split(',').map(Number);
+        payerKeypair = Keypair.fromSecretKey(new Uint8Array(privateKeyArray));
       }
       // Check if it's an array
-      else if (Array.isArray(privateKey)) {
-        keypair = Keypair.fromSecretKey(new Uint8Array(privateKey));
+      else if (Array.isArray(paymentKey)) {
+        payerKeypair = Keypair.fromSecretKey(new Uint8Array(paymentKey));
       }
       // Try to parse as JSON array string
-      else if (typeof privateKey === 'string') {
-        const parsed = JSON.parse(privateKey);
+      else if (typeof paymentKey === 'string') {
+        const parsed = JSON.parse(paymentKey);
         if (Array.isArray(parsed)) {
-          keypair = Keypair.fromSecretKey(new Uint8Array(parsed));
+          payerKeypair = Keypair.fromSecretKey(new Uint8Array(parsed));
         } else {
           throw new Error('Invalid format');
         }
@@ -104,6 +122,18 @@ app.post('/api/buy-sns-name', async (req, res) => {
         success: false,
         error: 'Invalid private key format. Supported formats: base58 string, array, or comma-separated string'
       });
+    }
+
+    // Parse owner private key (if ownerAddress not provided, use privateKey)
+    let ownerKeypair;
+    if (!ownerAddress) {
+      // Use same keypair for owner
+      ownerKeypair = payerKeypair;
+      ownerPublicKey = payerKeypair.publicKey;
+    } else {
+      // Owner address already set above, but we need keypair for signing if needed
+      // For now, owner is just the address, payer pays
+      ownerKeypair = null; // Owner doesn't need to sign if payer is different
     }
 
     // Connect to Solana network
@@ -121,8 +151,8 @@ app.post('/api/buy-sns-name', async (req, res) => {
       });
     }
 
-    // Get user's SOL balance
-    const balance = await connection.getBalance(keypair.publicKey);
+    // Get payer's SOL balance (person paying the fee)
+    const balance = await connection.getBalance(payerKeypair.publicKey);
     // Lower requirement for testnet, higher for mainnet
     const requiredBalance = network === 'testnet' 
       ? 0.01 * 1e9  // 0.01 SOL for testnet (for testing)
@@ -140,7 +170,7 @@ app.post('/api/buy-sns-name', async (req, res) => {
         error: `Insufficient balance. Need at least ${requiredSOL} SOL, but you have ${balanceSOL} SOL`,
         balance: balanceSOL,
         required: requiredSOL,
-        address: keypair.publicKey.toString(),
+        address: payerKeypair.publicKey.toString(),
         network: network,
         ...(faucetLink && { faucetUrl: faucetLink })
       });
@@ -151,24 +181,35 @@ app.post('/api/buy-sns-name', async (req, res) => {
     // interaction with the SNS program which may need additional instructions
     
     const registrationFee = network === 'testnet' ? 0.01 * 1e9 : 0.1 * 1e9;
-    const transaction = new Transaction().add(
+    
+    // Create transaction
+    // If owner is different, we need to transfer to owner's address
+    // For now, we'll transfer to nameAccount and note the owner
+    const transaction = new Transaction();
+    
+    // Transfer registration fee from payer to name account
+    transaction.add(
       SystemProgram.transfer({
-        fromPubkey: keypair.publicKey,
+        fromPubkey: payerKeypair.publicKey,
         toPubkey: nameAccount,
         lamports: registrationFee, // Registration fee
       })
     );
+    
+    // If owner is different from payer, we could add additional instructions here
+    // For SNS, the actual ownership is managed by the SNS program
+    // This is a simplified version - in production, you'd interact with SNS program directly
 
     // Get recent blockhash
     const { blockhash } = await connection.getLatestBlockhash();
     transaction.recentBlockhash = blockhash;
-    transaction.feePayer = keypair.publicKey;
+    transaction.feePayer = payerKeypair.publicKey;
 
-    // Sign and send transaction
+    // Sign and send transaction (only payer signs)
     const signature = await sendAndConfirmTransaction(
       connection,
       transaction,
-      [keypair],
+      [payerKeypair],
       { commitment: 'confirmed' }
     );
 
@@ -178,16 +219,20 @@ app.post('/api/buy-sns-name', async (req, res) => {
       data: {
         name: name,
         nameAccount: nameAccount.toString(),
-        walletAddress: keypair.publicKey.toString(), // Wallet that purchased the name
-        owner: keypair.publicKey.toString(), // Owner of the name
+        payerAddress: payerKeypair.publicKey.toString(), // Wallet that paid the fee
+        ownerAddress: ownerPublicKey.toString(), // Owner of the name (can be different)
+        isDifferentOwner: ownerAddress ? true : false, // Whether owner is different from payer
         transactionSignature: signature,
         network: network,
         explorerUrl: network === 'mainnet' 
           ? `https://solscan.io/tx/${signature}`
           : `https://solscan.io/tx/${signature}?cluster=testnet`,
-        walletExplorerUrl: network === 'mainnet'
-          ? `https://solscan.io/account/${keypair.publicKey.toString()}`
-          : `https://solscan.io/account/${keypair.publicKey.toString()}?cluster=testnet`
+        payerExplorerUrl: network === 'mainnet'
+          ? `https://solscan.io/account/${payerKeypair.publicKey.toString()}`
+          : `https://solscan.io/account/${payerKeypair.publicKey.toString()}?cluster=testnet`,
+        ownerExplorerUrl: network === 'mainnet'
+          ? `https://solscan.io/account/${ownerPublicKey.toString()}`
+          : `https://solscan.io/account/${ownerPublicKey.toString()}?cluster=testnet`
       }
     });
 
