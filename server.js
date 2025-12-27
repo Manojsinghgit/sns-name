@@ -373,7 +373,7 @@ app.get('/api/verify-name/:name', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000; // Render uses PORT env var automatically
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌐 Network: ${process.env.NETWORK || 'testnet'}`);

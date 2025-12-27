@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: sns-name-buyer
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: NETWORK
+        value: testnet
+      - key: TESTNET_RPC_URL
+        value: https://api.testnet.solana.com
+      - key: MAINNET_RPC_URL
+        value: https://api.mainnet-beta.solana.com
+
