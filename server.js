@@ -178,12 +178,16 @@ app.post('/api/buy-sns-name', async (req, res) => {
       data: {
         name: name,
         nameAccount: nameAccount.toString(),
-        userAddress: keypair.publicKey.toString(),
+        walletAddress: keypair.publicKey.toString(), // Wallet that purchased the name
+        owner: keypair.publicKey.toString(), // Owner of the name
         transactionSignature: signature,
         network: network,
         explorerUrl: network === 'mainnet' 
           ? `https://solscan.io/tx/${signature}`
-          : `https://solscan.io/tx/${signature}?cluster=testnet`
+          : `https://solscan.io/tx/${signature}?cluster=testnet`,
+        walletExplorerUrl: network === 'mainnet'
+          ? `https://solscan.io/account/${keypair.publicKey.toString()}`
+          : `https://solscan.io/account/${keypair.publicKey.toString()}?cluster=testnet`
       }
     });
 
