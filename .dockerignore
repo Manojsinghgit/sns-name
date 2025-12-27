@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+.env
+.env.local
+.env.*.local
+.git
+.gitignore
+.DS_Store
+*.log
+README.md
+DEPLOYMENT.md
+AWS_DEPLOYMENT.md
+QUICK_DEPLOY.md
+
