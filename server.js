@@ -10,12 +10,42 @@ import {
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import bs58 from 'bs58';
+import TronWeb from 'tronweb';
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Tron Configuration
+// USDC Contract Addresses
+const USDC_CONTRACT_MAINNET = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+const USDC_CONTRACT_TESTNET = 'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf'; // Testnet USDC
+
+// Get TronWeb instance based on network
+function getTronWeb() {
+  const network = process.env.TRON_NETWORK || process.env.NETWORK || 'testnet';
+  
+  if (network === 'mainnet') {
+    return new TronWeb({
+      fullHost: process.env.TRON_MAINNET_RPC_URL || 'https://api.trongrid.io',
+      headers: { 'TRON-PRO-API-KEY': process.env.TRON_API_KEY || '' }
+    });
+  } else {
+    // Testnet (Shasta)
+    return new TronWeb({
+      fullHost: process.env.TRON_TESTNET_RPC_URL || 'https://api.shasta.trongrid.io',
+      headers: { 'TRON-PRO-API-KEY': process.env.TRON_API_KEY || '' }
+    });
+  }
+}
+
+// Get USDC contract address based on network
+function getUSDCContractAddress() {
+  const network = process.env.TRON_NETWORK || process.env.NETWORK || 'testnet';
+  return network === 'mainnet' ? USDC_CONTRACT_MAINNET : USDC_CONTRACT_TESTNET;
+}
 
 // SNS Program IDs
 const SNS_PROGRAM_ID = new PublicKey('namesLPneVptA9Z5rqUDD9tMTWEJwofgaYwp8cawRkX');
@@ -370,6 +400,180 @@ app.get('/api/verify-transaction/:signature', async (req, res) => {
   }
 });
 
+// Verify Tron USDC Payment
+app.post('/api/verify-tron-payment', async (req, res) => {
+  try {
+    const { walletAddress } = req.body;
+
+    // Validation
+    if (!walletAddress) {
+      return res.status(400).json({
+        success: false,
+        error: 'walletAddress is required'
+      });
+    }
+
+    const tronWeb = getTronWeb();
+    const network = process.env.TRON_NETWORK || process.env.NETWORK || 'testnet';
+    const usdcContract = getUSDCContractAddress();
+    
+    // Validate Tron address format
+    if (!tronWeb.isAddress(walletAddress)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid Tron wallet address format'
+      });
+    }
+
+    // Convert to base58 if it's in hex format
+    const base58Address = tronWeb.address.fromHex(walletAddress) || walletAddress;
+    
+    // Use TronGrid API to get TRC20 transactions
+    const apiUrl = network === 'mainnet' 
+      ? 'https://api.trongrid.io'
+      : 'https://api.shasta.trongrid.io';
+    
+    let transactions = [];
+    
+    try {
+      // Get TRC20 transfers to this address
+      const response = await fetch(
+        `${apiUrl}/v1/accounts/${base58Address}/transactions/trc20?only_confirmed=true&limit=200&contract_address=${usdcContract}`,
+        {
+          headers: {
+            'TRON-PRO-API-KEY': process.env.TRON_API_KEY || '',
+            'Accept': 'application/json'
+          }
+        }
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.data && data.data.length > 0) {
+          // Filter for incoming transactions (where 'to' matches our address)
+          transactions = data.data
+            .filter(tx => {
+              const toAddress = tx.to || tx.to_address;
+              return toAddress && (
+                toAddress.toLowerCase() === base58Address.toLowerCase() ||
+                toAddress.toLowerCase() === walletAddress.toLowerCase()
+              );
+            })
+            .map(tx => {
+              // USDC on Tron has 6 decimals
+              const value = tx.value || tx.amount || '0';
+              const amount = parseFloat(value) / 1e6;
+              
+              return {
+                from: tx.from || tx.from_address,
+                to: tx.to || tx.to_address,
+                amount: amount,
+                amountRaw: value,
+                transactionHash: tx.transaction_id || tx.hash,
+                blockNumber: tx.block_timestamp || tx.block_number || 0,
+                timestamp: tx.block_timestamp ? new Date(tx.block_timestamp).toISOString() : null,
+                tokenInfo: tx.token_info || {
+                  symbol: 'USDC',
+                  address: usdcContract
+                }
+              };
+            })
+            .sort((a, b) => b.blockNumber - a.blockNumber); // Sort by block number (newest first)
+        }
+      } else {
+        const errorText = await response.text();
+        console.error('TronGrid API error:', response.status, errorText);
+      }
+    } catch (fetchError) {
+      console.error('Error fetching from TronGrid:', fetchError);
+      
+      // Fallback: Try using TronWeb to get transactions
+      try {
+        const contract = await tronWeb.contract().at(usdcContract);
+        
+        // Get account info to find transactions
+        const accountInfo = await tronWeb.trx.getAccount(base58Address);
+        
+        // Get transactions from account
+        const accountTransactions = await tronWeb.trx.getTransactionsFromAddress(base58Address, 100);
+        
+        for (const tx of accountTransactions) {
+          if (tx.raw_data?.contract) {
+            for (const contractData of tx.raw_data.contract) {
+              if (contractData.type === 'TriggerSmartContract') {
+                const contractAddr = tronWeb.address.fromHex(contractData.parameter.value.contract_address);
+                if (contractAddr === usdcContract) {
+                  const data = contractData.parameter.value.data;
+                  if (data && data.startsWith('a9059cbb')) {
+                    // Decode transfer(address,uint256)
+                    const toHex = '41' + data.slice(34, 74);
+                    const amountHex = data.slice(74, 138);
+                    
+                    try {
+                      const toAddress = tronWeb.address.fromHex(toHex);
+                      const amount = tronWeb.toBigNumber('0x' + amountHex).dividedBy(1e6).toNumber();
+                      
+                      if (toAddress === base58Address) {
+                        transactions.push({
+                          from: tronWeb.address.fromHex(contractData.parameter.value.owner_address),
+                          to: toAddress,
+                          amount: amount,
+                          amountRaw: amountHex,
+                          transactionHash: tx.txID,
+                          blockNumber: tx.blockNumber || 0,
+                          timestamp: tx.raw_data.timestamp ? new Date(tx.raw_data.timestamp).toISOString() : null
+                        });
+                      }
+                    } catch (decodeError) {
+                      console.error('Error decoding transaction:', decodeError);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (fallbackError) {
+        console.error('Fallback method error:', fallbackError);
+      }
+    }
+
+    // Format response
+    const latestTransaction = transactions.length > 0 ? transactions[0] : null;
+    const totalAmount = transactions.reduce((sum, tx) => sum + tx.amount, 0);
+
+    res.json({
+      success: true,
+      walletAddress: base58Address,
+      network: network,
+      usdcContract: usdcContract,
+      transactions: transactions,
+      transactionCount: transactions.length,
+      totalReceived: totalAmount,
+      latestTransaction: latestTransaction ? {
+        from: latestTransaction.from,
+        amount: latestTransaction.amount,
+        amountFormatted: `${latestTransaction.amount.toFixed(6)} USDC`,
+        transactionHash: latestTransaction.transactionHash,
+        timestamp: latestTransaction.timestamp,
+        explorerUrl: network === 'mainnet'
+          ? `https://tronscan.org/#/transaction/${latestTransaction.transactionHash}`
+          : `https://shasta.tronscan.org/#/transaction/${latestTransaction.transactionHash}`
+      } : null,
+      message: transactions.length > 0 
+        ? `Found ${transactions.length} USDC transaction(s) to this address`
+        : 'No USDC transactions found for this address'
+    });
+
+  } catch (error) {
+    console.error('Error verifying Tron payment:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to verify Tron payment'
+    });
+  }
+});
+
 // Verify name registration status
 app.get('/api/verify-name/:name', async (req, res) => {
   try {
@@ -425,6 +629,7 @@ app.listen(PORT, () => {
   console.log(`📡 RPC URL: ${getRpcUrl()}`);
   console.log(`\nEndpoints:`);
   console.log(`  POST /api/buy-sns-name - Buy SNS name`);
+  console.log(`  POST /api/verify-tron-payment - Verify Tron USDC payment`);
   console.log(`  GET  /api/check-name/:name - Check name availability`);
   console.log(`  GET  /api/verify-name/:name - Verify name registration`);
   console.log(`  GET  /api/verify-transaction/:signature - Verify transaction`);
